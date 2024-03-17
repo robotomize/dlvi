@@ -21,7 +21,11 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+
+	"github.com/robotomize/dlvi/pkg/sizedbuf"
 )
+
+const defaultFlushLimit = 512 * 1024
 
 var (
 	chunkList string
@@ -202,6 +206,8 @@ func mergeSegments(ctx context.Context) error {
 	}
 	defer f.Close()
 
+	buf := sizedbuf.New(f, defaultFlushLimit)
+
 	for _, entry := range dir {
 		select {
 		case <-ctx.Done():
@@ -210,9 +216,13 @@ func mergeSegments(ctx context.Context) error {
 		}
 
 		pth := filepath.Join(storePth, entry.Name())
-		if err := copyFile(f, pth); err != nil {
+		if err := copyFile(buf, pth); err != nil {
 			return fmt.Errorf("copyFile: %w", err)
 		}
+	}
+
+	if err := buf.Flush(); err != nil {
+		return fmt.Errorf("sizedbuf Flush: %w", err)
 	}
 
 	return nil
@@ -245,17 +255,22 @@ func downloadSegment(ctx context.Context, url string) error {
 	defer resp.Body.Close()
 
 	pth := filepath.Join(storePth, getFileNameFromURL(url))
-	out, err := os.Create(pth)
+	f, err := os.Create(pth)
 	if err != nil {
 		return fmt.Errorf("os Create: %w", err)
 	}
-	defer out.Close()
+	defer f.Close()
 
+	buf := sizedbuf.New(f, defaultFlushLimit)
 	cmd := exec.Command("openssl", "aes-128-cbc", "-K", hexKey, "-iv", iv, "-d")
 	cmd.Stdin = resp.Body
-	cmd.Stdout = out
+	cmd.Stdout = buf
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("exec Command Run openssl: %w", err)
+	}
+
+	if err := buf.Flush(); err != nil {
+		return fmt.Errorf("sizedbuf Flush: %w", err)
 	}
 
 	return nil
